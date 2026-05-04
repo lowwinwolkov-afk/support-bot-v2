@@ -193,22 +193,44 @@ async def support_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ticket_id = context.user_data["reply_ticket"]
     text = update.message.text
+    admin_id = update.message.from_user.id
 
-    ticket = get_ticket(ticket_id)
-    if not ticket:
+    # получаем тикет
+    cursor.execute("SELECT user_id FROM tickets WHERE id=?", (ticket_id,))
+    result = cursor.fetchone()
+
+    if not result:
+        await update.message.reply_text("❌ Тикет не найден")
         return
 
-    user_id = ticket[1]
+    user_id = result[0]
 
+    # отправка пользователю
     await context.bot.send_message(
         chat_id=user_id,
         text=f"📩 Ответ поддержки:\n\n{text}"
     )
 
-    update_history(ticket_id, text)
-    log(ticket_id, "REPLY", update.message.from_user.id)
+    # сохраняем историю
+    cursor.execute("SELECT history FROM tickets WHERE id=?", (ticket_id,))
+    history = cursor.fetchone()[0] or ""
+    history += f"\nSUPPORT: {text}"
 
-    await update.message.reply_text("✅ Отправлено")
+    cursor.execute(
+        "UPDATE tickets SET history=? WHERE id=?",
+        (history, ticket_id)
+    )
+    conn.commit()
+
+    # лог
+    cursor.execute(
+        "INSERT INTO logs (ticket_id, action, actor_id, created_at) VALUES (?, ?, ?, ?)",
+        (ticket_id, "REPLY", admin_id, now())
+    )
+    conn.commit()
+
+    await update.message.reply_text("✅ Отправлено пользователю")
+
     del context.user_data["reply_ticket"]
 
 
