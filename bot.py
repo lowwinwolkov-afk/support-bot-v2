@@ -1,19 +1,28 @@
 import sqlite3
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters
-)
+from telegram import *
+from telegram.ext import *
 
 TOKEN = "8288994829:AAHh5SqqJyWe_3gskGRz10sv5vLyw9ryBf0"
-SUPPORT_CHAT_ID = -1003953681428
 
-# ---------------- DATABASE ----------------
+GROUP_ID = -1003979602444
+
+# 📌 ТОЛЬКО рабочие темы для бота
+NEW_TICKETS_TOPIC = 42
+LOG_TOPIC = 44
+
+SUPPORT_TOPICS = {
+    5: "LowWin",
+    7: "Hellsinger"
+    10: "Вакантно (1)"
+    9: "Вакантно (2)"
+    12: "Вакантно (3)"
+}
+
+# 🚫 ВАЖНО: эти темы бот ИГНОРИРУЕТ (флуд / инфо)
+IGNORE_TOPICS = [4, 1]
+
+# ---------------- DB ----------------
 conn = sqlite3.connect("tickets.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -24,10 +33,8 @@ CREATE TABLE IF NOT EXISTS tickets (
     username TEXT,
     message TEXT,
     status TEXT,
-    history TEXT,
-    created_at TEXT,
     assigned_to INTEGER,
-    support_msg_id INTEGER
+    created_at TEXT
 )
 """)
 
@@ -35,182 +42,196 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     muted_until TEXT,
-    banned_until TEXT,
-    last_ticket_time TEXT
+    banned_until TEXT
 )
 """)
 
 conn.commit()
 
-# ---------------- HELPERS ----------------
+# ---------------- UTILS ----------------
 def now():
     return datetime.now()
 
-def now_str():
+def fmt():
     return now().strftime("%Y-%m-%d %H:%M:%S")
 
-def get_user(user_id):
-    cursor.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+def get_ticket(tid):
+    cursor.execute("SELECT * FROM tickets WHERE id=?", (tid,))
     return cursor.fetchone()
 
-def update_user(user_id, muted=None, banned=None, last_ticket=None):
+def update_user(uid, muted=None, banned=None):
     cursor.execute("""
-    INSERT INTO users (user_id, muted_until, banned_until, last_ticket_time)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO users (user_id, muted_until, banned_until)
+    VALUES (?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
     muted_until=COALESCE(?, muted_until),
-    banned_until=COALESCE(?, banned_until),
-    last_ticket_time=COALESCE(?, last_ticket_time)
-    """, (user_id, muted, banned, last_ticket,
-          muted, banned, last_ticket))
+    banned_until=COALESCE(?, banned_until)
+    """, (uid, muted, banned, muted, banned))
     conn.commit()
-
-def get_ticket_by_message(msg_id):
-    cursor.execute("SELECT * FROM tickets WHERE support_msg_id=?", (msg_id,))
-    return cursor.fetchone()
 
 # ---------------- UI ----------------
-def buttons(ticket_id):
+def kb(tid):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⏳ В ожидании", callback_data=f"wait_{ticket_id}")],
-        [InlineKeyboardButton("❌ Закрыть", callback_data=f"close_{ticket_id}")]
+        [InlineKeyboardButton("💬 Взять", callback_data=f"take_{tid}")],
+        [InlineKeyboardButton("🔄 Передать", callback_data=f"transfer_{tid}")],
+        [InlineKeyboardButton("⏳ Ожидание", callback_data=f"wait_{tid}")],
+        [InlineKeyboardButton("🔐 Закрыть", callback_data=f"close_{tid}")],
+        [InlineKeyboardButton("🔇 Мут 1ч", callback_data=f"mute_{tid}")],
+        [InlineKeyboardButton("📵 Бан 3д", callback_data=f"ban_{tid}")]
     ])
 
-# ---------------- COMMAND ----------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📩 Напишите сообщение в поддержку")
-
-# ---------------- USER MESSAGE ----------------
+# ---------------- USER ----------------
 async def user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    data = get_user(user.id)
-
-    # бан
-    if data and data[2]:
-        if datetime.strptime(data[2], "%Y-%m-%d %H:%M:%S") > now():
-            return
-
-    # мут
-    if data and data[1]:
-        if datetime.strptime(data[1], "%Y-%m-%d %H:%M:%S") > now():
-            await update.message.reply_text("🔇 Вы временно ограничены")
-            return
-
-    # антиспам
-    if data and data[3]:
-        last = datetime.strptime(data[3], "%Y-%m-%d %H:%M:%S")
-        if now() - last < timedelta(minutes=3):
-            await update.message.reply_text("⏳ Подождите перед новым обращением")
-            return
-
-    update_user(user.id, last_ticket=now_str())
 
     cursor.execute("""
-    INSERT INTO tickets (user_id, username, message, status, history, created_at)
+    INSERT INTO tickets (user_id, username, message, status, assigned_to, created_at)
     VALUES (?, ?, ?, ?, ?, ?)
-    """, (user.id, user.first_name, update.message.text, "NEW", update.message.text, now_str()))
+    """, (user.id, user.first_name, update.message.text, "NEW", None, fmt()))
     conn.commit()
 
-    ticket_id = cursor.lastrowid
+    tid = cursor.lastrowid
 
-    msg = await context.bot.send_message(
-        chat_id=SUPPORT_CHAT_ID,
-        text=f"🎫 Тикет #{ticket_id}\n👤 {user.first_name}\n\n{update.message.text}",
-        reply_markup=buttons(ticket_id)
+    # 📥 ТОЛЬКО сюда идут тикеты
+    await context.bot.send_message(
+        chat_id=GROUP_ID,
+        message_thread_id=NEW_TICKETS_TOPIC,
+        text=f"🎫 Тикет #{tid}\n👤 {user.first_name}\n\n{update.message.text}",
+        reply_markup=kb(tid)
     )
 
-    cursor.execute("UPDATE tickets SET support_msg_id=? WHERE id=?",
-                   (msg.message_id, ticket_id))
-    conn.commit()
-
-    await update.message.reply_text("✅ Обращение отправлено")
+    await update.message.reply_text("✅ Тикет отправлен! Ожидайте ответ саппорта")
 
 # ---------------- CALLBACK ----------------
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    q = update.callback_query
+    await q.answer()
 
-    action, ticket_id = query.data.split("_")
-    ticket_id = int(ticket_id)
+    action, tid = q.data.split("_")
+    tid = int(tid)
 
-    cursor.execute("SELECT user_id FROM tickets WHERE id=?", (ticket_id,))
-    user_id = cursor.fetchone()[0]
+    ticket = get_ticket(tid)
+    if not ticket:
+        return
 
-    if action == "wait":
-        await context.bot.send_message(user_id, f"⏳ Тикет #{ticket_id} в ожидании")
+    user_id = ticket[1]
+    support_name = q.from_user.first_name
+    support_id = q.from_user.id
 
+    # ---------------- TAKE ----------------
+    if action == "take":
+
+        if ticket[5]:
+            await q.message.reply_text("❌ Уже обрабатывается другим саппортом")
+            return
+
+        cursor.execute(
+            "UPDATE tickets SET assigned_to=?, status=? WHERE id=?",
+            (support_id, "IN_PROGRESS", tid)
+        )
+        conn.commit()
+
+        # 👤 уведомление пользователю
+        await context.bot.send_message(
+            user_id,
+            f"🛠 Саппорт {support_name} взялся за ваш тикет #{tid}"
+        )
+
+        # 🧑‍💻 отправка в тему саппорта
+        if support_id in SUPPORT_TOPICS:
+            thread_id = list(SUPPORT_TOPICS.keys())[list(SUPPORT_TOPICS.values()).index(support_name)]
+
+            await context.bot.send_message(
+                GROUP_ID,
+                message_thread_id=thread_id,
+                text=f"🎫 Тикет #{tid}\n👤 {ticket[2]}\n\n{ticket[3]}\n\n👨‍💻 Взял: {support_name}"
+            )
+
+        # 📊 лог
+        await context.bot.send_message(
+            GROUP_ID,
+            message_thread_id=LOG_TOPIC,
+            text=f"📊 Тикет #{tid} взят {support_name}"
+        )
+
+    # ---------------- TRANSFER ----------------
+    elif action == "transfer":
+        cursor.execute("UPDATE tickets SET assigned_to=NULL WHERE id=?", (tid,))
+        conn.commit()
+
+        await context.bot.send_message(
+            GROUP_ID,
+            message_thread_id=LOG_TOPIC,
+            text=f"🔄 Тикет #{tid} передан обратно в очередь"
+        )
+
+    # ---------------- WAIT ----------------
+    elif action == "wait":
+        await context.bot.send_message(user_id, f"⏳ Тикет #{tid} на рассмотрении…")
+
+    # ---------------- CLOSE ----------------
     elif action == "close":
-        await context.bot.send_message(user_id, f"❌ Тикет #{ticket_id} закрыт")
+        cursor.execute("UPDATE tickets SET status=? WHERE id=?", ("CLOSED", tid))
+        conn.commit()
+
+        await context.bot.send_message(user_id, f"❌ Тикет #{tid} закрыт")
+
+    # ---------------- MUTE ----------------
+    elif action == "mute":
+        until = now() + timedelta(minutes=60)
+        update_user(user_id, muted=until.strftime("%Y-%m-%d %H:%M:%S"))
+
+        await context.bot.send_message(user_id, "🔇 Мут на 60 минут")
+
+    # ---------------- BAN ----------------
+    elif action == "ban":
+        until = now() + timedelta(hours=72)
+        update_user(user_id, banned=until.strftime("%Y-%m-%d %H:%M:%S"))
+
+        await context.bot.send_message(user_id, "⛔ Бан на 3 дня")
 
 # ---------------- SUPPORT REPLY ----------------
 async def support_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != SUPPORT_CHAT_ID:
+
+    # ❌ игнорируем флуд / инфо темы
+    thread_id = update.message.message_thread_id
+    if thread_id in IGNORE_TOPICS:
         return
 
     if not update.message.reply_to_message:
         return
 
-    msg_id = update.message.reply_to_message.message_id
-    ticket = get_ticket_by_message(msg_id)
+    text = update.message.reply_to_message.text
+
+    if "Тикет #" not in text:
+        return
+
+    tid = int(text.split("#")[1].split("\n")[0])
+    ticket = get_ticket(tid)
 
     if not ticket:
         return
 
-    ticket_id = ticket[0]
-    user_id = ticket[1]
-    assigned = ticket[7]
-
-    support_id = update.message.from_user.id
-    support_name = update.message.from_user.first_name
-
-    # закрепление
-    if assigned and assigned != support_id:
-        await update.message.reply_text("❌ Тикет уже закреплён за другим саппортом")
-        return
-
-    if not assigned:
-        cursor.execute(
-            "UPDATE tickets SET assigned_to=? WHERE id=?",
-            (support_id, ticket_id)
-        )
-        conn.commit()
-
-    text = update.message.text
-
-    # отправка пользователю
     await context.bot.send_message(
-        chat_id=user_id,
-        text=f"📩 Тикет #{ticket_id}\n👨‍💻 {support_name}:\n\n{text}"
+        ticket[1],
+        f"👨‍💻 {update.message.from_user.first_name}:\n\n{update.message.text}"
     )
 
-    # история
-    cursor.execute("SELECT history FROM tickets WHERE id=?", (ticket_id,))
-    history = cursor.fetchone()[0] or ""
-    history += f"\n{support_name}: {text}"
-
-    cursor.execute("UPDATE tickets SET history=? WHERE id=?",
-                   (history, ticket_id))
-    conn.commit()
-
-    await update.message.reply_text(f"✅ Ответ отправлен (Тикет #{ticket_id})")
+# ---------------- START ----------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Опишите вашу проблему")
 
 # ---------------- APP ----------------
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 
-# ЛС
 app.add_handler(MessageHandler(
     filters.TEXT & filters.ChatType.PRIVATE,
     user_message
 ))
 
-# группа саппорта
-app.add_handler(MessageHandler(
-    filters.TEXT & filters.ChatType.GROUPS,
-    support_reply
-))
-
+app.add_handler(MessageHandler(filters.TEXT, support_reply))
 app.add_handler(CallbackQueryHandler(callback))
 
 app.run_polling()
