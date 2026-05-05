@@ -4,23 +4,19 @@ from telegram import *
 from telegram.ext import *
 
 TOKEN = "8288994829:AAHh5SqqJyWe_3gskGRz10sv5vLyw9ryBf0"
-
 GROUP_ID = -1003979602444
 
-# 📌 ТОЛЬКО рабочие темы для бота
+# 📌 темы
 NEW_TICKETS_TOPIC = 42
 LOG_TOPIC = 44
 
-SUPPORT_TOPICS = {
-    5: "LowWin",
-    7: "Hellsinger"
-    10: "Вакантно (1)"
-    9: "Вакантно (2)"
-    12: "Вакантно (3)"
+# 🧑‍💻 саппорт → тема (СТАБИЛЬНО)
+SUPPORT_THREADS = {
+    5530223549: 5,   # LowWin
+    987654321: 7    # Hellsinger
 }
 
-# 🚫 ВАЖНО: эти темы бот ИГНОРИРУЕТ (флуд / инфо)
-IGNORE_TOPICS = [4, 1]
+IGNORE_TOPICS = [1, 4]
 
 # ---------------- DB ----------------
 conn = sqlite3.connect("tickets.db", check_same_thread=False)
@@ -59,6 +55,13 @@ def get_ticket(tid):
     cursor.execute("SELECT * FROM tickets WHERE id=?", (tid,))
     return cursor.fetchone()
 
+def set_owner(tid, uid):
+    cursor.execute(
+        "UPDATE tickets SET assigned_to=?, status=? WHERE id=?",
+        (uid, "IN_PROGRESS", tid)
+    )
+    conn.commit()
+
 def update_user(uid, muted=None, banned=None):
     cursor.execute("""
     INSERT INTO users (user_id, muted_until, banned_until)
@@ -75,7 +78,7 @@ def kb(tid):
         [InlineKeyboardButton("💬 Взять", callback_data=f"take_{tid}")],
         [InlineKeyboardButton("🔄 Передать", callback_data=f"transfer_{tid}")],
         [InlineKeyboardButton("⏳ Ожидание", callback_data=f"wait_{tid}")],
-        [InlineKeyboardButton("🔐 Закрыть", callback_data=f"close_{tid}")],
+        [InlineKeyboardButton("❌ Закрыть", callback_data=f"close_{tid}")],
         [InlineKeyboardButton("🔇 Мут 1ч", callback_data=f"mute_{tid}")],
         [InlineKeyboardButton("📵 Бан 3д", callback_data=f"ban_{tid}")]
     ])
@@ -92,7 +95,6 @@ async def user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tid = cursor.lastrowid
 
-    # 📥 ТОЛЬКО сюда идут тикеты
     await context.bot.send_message(
         chat_id=GROUP_ID,
         message_thread_id=NEW_TICKETS_TOPIC,
@@ -100,7 +102,7 @@ async def user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb(tid)
     )
 
-    await update.message.reply_text("✅ Тикет отправлен! Ожидайте ответ саппорта")
+    await update.message.reply_text("✅ Тикет создан")
 
 # ---------------- CALLBACK ----------------
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -115,43 +117,36 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = ticket[1]
-    support_name = q.from_user.first_name
     support_id = q.from_user.id
+    support_name = q.from_user.first_name
 
     # ---------------- TAKE ----------------
     if action == "take":
 
         if ticket[5]:
-            await q.message.reply_text("❌ Уже обрабатывается другим саппортом")
+            await q.message.reply_text("❌ Тикет в обработке у другого саппорта")
             return
 
-        cursor.execute(
-            "UPDATE tickets SET assigned_to=?, status=? WHERE id=?",
-            (support_id, "IN_PROGRESS", tid)
-        )
-        conn.commit()
+        set_owner(tid, support_id)
 
-        # 👤 уведомление пользователю
         await context.bot.send_message(
             user_id,
-            f"🛠 Саппорт {support_name} взялся за ваш тикет #{tid}"
+            f"🛠 Саппорт {support_name} начал обработку тикета #{tid}"
         )
 
-        # 🧑‍💻 отправка в тему саппорта
-        if support_id in SUPPORT_TOPICS:
-            thread_id = list(SUPPORT_TOPICS.keys())[list(SUPPORT_TOPICS.values()).index(support_name)]
+        thread_id = SUPPORT_THREADS.get(support_id)
 
+        if thread_id:
             await context.bot.send_message(
                 GROUP_ID,
                 message_thread_id=thread_id,
-                text=f"🎫 Тикет #{tid}\n👤 {ticket[2]}\n\n{ticket[3]}\n\n👨‍💻 Взял: {support_name}"
+                text=f"🎫 Тикет #{tid}\n👤 {ticket[2]}\n\n{ticket[3]}\n\n👨‍💻 {support_name}"
             )
 
-        # 📊 лог
         await context.bot.send_message(
             GROUP_ID,
             message_thread_id=LOG_TOPIC,
-            text=f"📊 Тикет #{tid} взят {support_name}"
+            text=f"📊 {support_name} взял тикет #{tid}"
         )
 
     # ---------------- TRANSFER ----------------
@@ -162,40 +157,36 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             GROUP_ID,
             message_thread_id=LOG_TOPIC,
-            text=f"🔄 Тикет #{tid} передан обратно в очередь"
+            text=f"🔄 Тикет #{tid} возвращён в очередь"
         )
 
     # ---------------- WAIT ----------------
     elif action == "wait":
-        await context.bot.send_message(user_id, f"⏳ Тикет #{tid} на рассмотрении…")
+        await context.bot.send_message(user_id, f"⏳ Тикет #{tid} в обработке")
 
     # ---------------- CLOSE ----------------
     elif action == "close":
         cursor.execute("UPDATE tickets SET status=? WHERE id=?", ("CLOSED", tid))
         conn.commit()
 
-        await context.bot.send_message(user_id, f"❌ Тикет #{tid} закрыт")
+        await context.bot.send_message(user_id, f"🔐 Тикет #{tid} закрыт")
 
     # ---------------- MUTE ----------------
     elif action == "mute":
-        until = now() + timedelta(minutes=60)
+        until = now() + timedelta(hours=1)
         update_user(user_id, muted=until.strftime("%Y-%m-%d %H:%M:%S"))
-
-        await context.bot.send_message(user_id, "🔇 Мут на 60 минут")
+        await context.bot.send_message(user_id, "🔇 Мут 1 час")
 
     # ---------------- BAN ----------------
     elif action == "ban":
-        until = now() + timedelta(hours=72)
+        until = now() + timedelta(days=3)
         update_user(user_id, banned=until.strftime("%Y-%m-%d %H:%M:%S"))
-
-        await context.bot.send_message(user_id, "⛔ Бан на 3 дня")
+        await context.bot.send_message(user_id, "📵 Бан 3 дня")
 
 # ---------------- SUPPORT REPLY ----------------
 async def support_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    # ❌ игнорируем флуд / инфо темы
-    thread_id = update.message.message_thread_id
-    if thread_id in IGNORE_TOPICS:
+    if update.message.message_thread_id in IGNORE_TOPICS:
         return
 
     if not update.message.reply_to_message:
@@ -219,7 +210,7 @@ async def support_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------- START ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Опишите вашу проблему")
+    await update.message.reply_text("Опишите проблему")
 
 # ---------------- APP ----------------
 app = ApplicationBuilder().token(TOKEN).build()
@@ -231,7 +222,11 @@ app.add_handler(MessageHandler(
     user_message
 ))
 
-app.add_handler(MessageHandler(filters.TEXT, support_reply))
+app.add_handler(MessageHandler(
+    filters.TEXT & filters.ChatType.GROUPS,
+    support_reply
+))
+
 app.add_handler(CallbackQueryHandler(callback))
 
 app.run_polling()
