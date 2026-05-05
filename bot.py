@@ -6,14 +6,13 @@ from telegram.ext import *
 TOKEN = "8288994829:AAHh5SqqJyWe_3gskGRz10sv5vLyw9ryBf0"
 GROUP_ID = -1003979602444
 
-# 📌 темы
 NEW_TICKETS_TOPIC = 42
 LOG_TOPIC = 44
 
-# 🧑‍💻 саппорт → тема (СТАБИЛЬНО)
+# user_id саппорта → thread_id темы
 SUPPORT_THREADS = {
-    5530223549: 5,   # LowWin
-    987654321: 7    # Hellsinger
+    5530223549: 5,
+    987654321: 7
 }
 
 IGNORE_TOPICS = [1, 4]
@@ -34,63 +33,64 @@ CREATE TABLE IF NOT EXISTS tickets (
 )
 """)
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    muted_until TEXT,
-    banned_until TEXT
-)
-""")
-
 conn.commit()
 
 # ---------------- UTILS ----------------
-def now():
-    return datetime.now()
-
 def fmt():
-    return now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def get_ticket(tid):
     cursor.execute("SELECT * FROM tickets WHERE id=?", (tid,))
     return cursor.fetchone()
 
-def set_owner(tid, uid):
-    cursor.execute(
-        "UPDATE tickets SET assigned_to=?, status=? WHERE id=?",
-        (uid, "IN_PROGRESS", tid)
-    )
-    conn.commit()
-
-def update_user(uid, muted=None, banned=None):
-    cursor.execute("""
-    INSERT INTO users (user_id, muted_until, banned_until)
-    VALUES (?, ?, ?)
-    ON CONFLICT(user_id) DO UPDATE SET
-    muted_until=COALESCE(?, muted_until),
-    banned_until=COALESCE(?, banned_until)
-    """, (uid, muted, banned, muted, banned))
-    conn.commit()
-
 # ---------------- UI ----------------
-def kb(tid):
+def start_kb():
+    return ReplyKeyboardMarkup([
+        ["🆕 Новый тикет"]
+    ], resize_keyboard=True)
+
+def ticket_kb(tid):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 Взять", callback_data=f"take_{tid}")],
         [InlineKeyboardButton("🔄 Передать", callback_data=f"transfer_{tid}")],
         [InlineKeyboardButton("⏳ Ожидание", callback_data=f"wait_{tid}")],
         [InlineKeyboardButton("❌ Закрыть", callback_data=f"close_{tid}")],
-        [InlineKeyboardButton("🔇 Мут 1ч", callback_data=f"mute_{tid}")],
-        [InlineKeyboardButton("📵 Бан 3д", callback_data=f"ban_{tid}")]
+        [InlineKeyboardButton("🔇 Мут1ч", callback_data=f"mute_{tid}")],
+        [InlineKeyboardButton("⛔ Бан 3д", callback_data=f"ban_{tid}")]
     ])
+
+# ---------------- START ----------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "👋 Добро пожаловать в саппорт\n\n"
+        "📌 Правила:\n"
+        "• Не спамить\n"
+        "• Не оскорблять\n"
+        "• Чётко описывать проблему\n\n"
+        "📋 Шаблон:\n"
+        "1. Ник\n"
+        "2. Сервер\n"
+        "3. Проблема\n"
+        "4. Дата/время"
+    )
+
+    await update.message.reply_text(text, reply_markup=start_kb())
 
 # ---------------- USER ----------------
 async def user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
     user = update.message.from_user
 
+    # нажал "новый тикет"
+    if text == "🆕 Новый тикет":
+        await start(update, context)
+        return
+
+    # создаём тикет
     cursor.execute("""
     INSERT INTO tickets (user_id, username, message, status, assigned_to, created_at)
     VALUES (?, ?, ?, ?, ?, ?)
-    """, (user.id, user.first_name, update.message.text, "NEW", None, fmt()))
+    """, (user.id, user.first_name, text, "NEW", None, fmt()))
     conn.commit()
 
     tid = cursor.lastrowid
@@ -98,11 +98,11 @@ async def user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(
         chat_id=GROUP_ID,
         message_thread_id=NEW_TICKETS_TOPIC,
-        text=f"🎫 Тикет #{tid}\n👤 {user.first_name}\n\n{update.message.text}",
-        reply_markup=kb(tid)
+        text=f"🎫 Тикет #{tid}\n👤 {user.first_name}\n\n{text}",
+        reply_markup=ticket_kb(tid)
     )
 
-    await update.message.reply_text("✅ Тикет создан")
+    await update.message.reply_text("✅ Тикет отправлен")
 
 # ---------------- CALLBACK ----------------
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -120,68 +120,76 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     support_id = q.from_user.id
     support_name = q.from_user.first_name
 
-    # ---------------- TAKE ----------------
+    # -------- TAKE --------
     if action == "take":
 
         if ticket[5]:
-            await q.message.reply_text("❌ Тикет в обработке у другого саппорта")
+            await q.message.reply_text("❌ Уже взят")
             return
 
-        set_owner(tid, support_id)
+        cursor.execute(
+            "UPDATE tickets SET assigned_to=?, status=? WHERE id=?",
+            (support_id, "IN_PROGRESS", tid)
+        )
+        conn.commit()
 
+        # уведомление пользователю
         await context.bot.send_message(
             user_id,
             f"🛠 Саппорт {support_name} начал обработку тикета #{tid}"
         )
 
+        # перенос в тему саппорта
         thread_id = SUPPORT_THREADS.get(support_id)
 
         if thread_id:
             await context.bot.send_message(
                 GROUP_ID,
                 message_thread_id=thread_id,
-                text=f"🎫 Тикет #{tid}\n👤 {ticket[2]}\n\n{ticket[3]}\n\n👨‍💻 {support_name}"
+                text=f"🎫 Тикет #{tid}\n👤 {ticket[2]}\n\n{ticket[3]}",
+                reply_markup=ticket_kb(tid)
             )
 
+        # редактируем старое сообщение
+        try:
+            await q.message.edit_text(
+                f"✅ Тикет #{tid}\n🛠 Обрабатывает: {support_name}"
+            )
+        except:
+            pass
+
+        # лог
         await context.bot.send_message(
             GROUP_ID,
             message_thread_id=LOG_TOPIC,
             text=f"📊 {support_name} взял тикет #{tid}"
         )
 
-    # ---------------- TRANSFER ----------------
+    # -------- TRANSFER --------
     elif action == "transfer":
         cursor.execute("UPDATE tickets SET assigned_to=NULL WHERE id=?", (tid,))
         conn.commit()
 
-        await context.bot.send_message(
-            GROUP_ID,
-            message_thread_id=LOG_TOPIC,
-            text=f"🔄 Тикет #{tid} возвращён в очередь"
-        )
+        await q.message.reply_text("🔄 Тикет передан")
 
-    # ---------------- WAIT ----------------
+    # -------- WAIT --------
     elif action == "wait":
-        await context.bot.send_message(user_id, f"⏳ Тикет #{tid} в обработке")
+        await context.bot.send_message(user_id, "⏳ Ваш тикет в ожидании")
 
-    # ---------------- CLOSE ----------------
+    # -------- CLOSE --------
     elif action == "close":
         cursor.execute("UPDATE tickets SET status=? WHERE id=?", ("CLOSED", tid))
         conn.commit()
 
-        await context.bot.send_message(user_id, f"🔐 Тикет #{tid} закрыт")
+        await context.bot.send_message(user_id, "❌ Тикет закрыт")
 
-    # ---------------- MUTE ----------------
+    # -------- MUTE --------
     elif action == "mute":
-        until = now() + timedelta(hours=1)
-        update_user(user_id, muted=until.strftime("%Y-%m-%d %H:%M:%S"))
-        await context.bot.send_message(user_id, "🔇 Мут 1 час")
+        await context.bot.send_message(user_id, "🔇 Вы получили мут")
 
-    # ---------------- BAN ----------------
+    # -------- BAN --------
     elif action == "ban":
-        until = now() + timedelta(days=3)
-        update_user(user_id, banned=until.strftime("%Y-%m-%d %H:%M:%S"))
-        await context.bot.send_message(user_id, "📵 Бан 3 дня")
+        await context.bot.send_message(user_id, "⛔ Вы забанены")
 
 # ---------------- SUPPORT REPLY ----------------
 async def support_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -207,10 +215,6 @@ async def support_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ticket[1],
         f"👨‍💻 {update.message.from_user.first_name}:\n\n{update.message.text}"
     )
-
-# ---------------- START ----------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Опишите проблему")
 
 # ---------------- APP ----------------
 app = ApplicationBuilder().token(TOKEN).build()
