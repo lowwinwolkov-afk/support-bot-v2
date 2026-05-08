@@ -5,7 +5,7 @@ from handlers.support_handlers import callback, support_reply
 
 TOKEN = "8288994829:AAHh5SqqJyWe_3gskGRz10sv5vLyw9ryBf0"
 
-GROUP_ID = -1001234567890  # супергруппа с темами
+GROUP_ID = -1003979602444 # супергруппа с темами
 
 LOG_TOPIC = 44  # можно поставить id темы логов
 
