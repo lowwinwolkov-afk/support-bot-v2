@@ -29,11 +29,11 @@ async def user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid = create_ticket(user.id, user.first_name, text)
 
     topic = await context.bot.create_forum_topic(
-        chat_id=GROUP_ID,
-        name=f"🆕 Ticket #{tid}"
-    )
+    chat_id=GROUP_ID,
+    name=f"🆕 Ticket #{tid}"
+)
 
-    set_thread(tid, topic.message_thread_id)
+thread_id = topic.message_thread_id
 
     await context.bot.send_message(
         chat_id=GROUP_ID,
