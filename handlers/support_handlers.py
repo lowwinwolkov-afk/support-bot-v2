@@ -3,7 +3,7 @@ from telegram.ext import ContextTypes
 from keyboards import support_kb
 from db import cursor, conn, now
 
-SUPPORT_TOPICS = {}  # support_id: thread_id
+SUPPORT_TOPICS = 5530223549:5 {}  # support_id: thread_id
 
 async def support_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
