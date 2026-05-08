@@ -1,0 +1,12 @@
+TOKEN = "8288994829:AAHh5SqqJyWe_3gskGRz10sv5vLyw9ryBf0"
+
+GROUP_ID = -1003979602444  # супергруппа с темами
+
+LOG_TOPIC = 44
+
+SUPPORTS = {
+    5530223549: "LowWin",
+    7123456789: "Hellsinger"
+}
+
+ANTI_SPAM_SECONDS = 180
