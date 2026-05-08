@@ -1,34 +1,44 @@
 from telegram import Update
 from telegram.ext import ContextTypes
-from keyboards import user_start_kb, user_cancel_kb
-from db import cursor, conn, now
-
-USER_STATE = {}
+from db import create_ticket, set_thread, get_user, set_user
+from keyboards import user_start
+from config import GROUP_ID
+from utils import fmt
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
     await update.message.reply_text(
-        "👋 Привет! Я бот-помощник проекта Awesome Russia. Опишите вашу проблему и вам обязательно помогут🤗\n\n"
-        "📋 Формат обращения:\n"
-        "Ваш игровой никнейм\nВаш сервер\nСуть проблемы\nДата и время возникновения ошибки",
-        reply_markup=user_start_kb()
+        "👋 Привет!\nОпишите проблему и мы ответим.",
+        reply_markup=user_start()
     )
+
 
 async def user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
+    user = update.message.from_user
     text = update.message.text
 
-    # Создаем новый тикет
-    cursor.execute("INSERT INTO tickets (user_id, username, message, status, created_at) VALUES (?,?,?,?,?)",
-                   (user_id, update.message.from_user.first_name, text, "NEW", now()))
-    conn.commit()
-    tid = cursor.lastrowid
+    # антиспам
+    u = get_user(user.id)
+    if u and u[1]:
+        from datetime import datetime, timedelta
+        last = datetime.strptime(u[1], "%Y-%m-%d %H:%M:%S")
+        if (datetime.now() - last).seconds < 180:
+            return
 
-    await update.message.reply_text(f"✅ Ваш запрос принят. Ожидайте ответ саппорта. Номер тикета: #{tid}")
+    set_user(user.id, "last_message_time", fmt())
 
-async def new_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📋 Подробно опишите вашу проблему:",
-        reply_markup=user_cancel_kb()
+    tid = create_ticket(user.id, user.first_name, text)
+
+    topic = await context.bot.create_forum_topic(
+        chat_id=GROUP_ID,
+        name=f"🆕 Ticket #{tid}"
     )
-    USER_STATE[update.message.from_user.id] = "new_ticket"
+
+    set_thread(tid, topic.message_thread_id)
+
+    await context.bot.send_message(
+        chat_id=GROUP_ID,
+        message_thread_id=topic.message_thread_id,
+        text=f"🆕 NEW TICKET #{tid}\n\n👤 {user.first_name}\n\n{text}"
+    )
+
+    await update.message.reply_text(f"✅ Тикет #{tid} создан")
