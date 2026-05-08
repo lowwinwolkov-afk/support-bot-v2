@@ -5,6 +5,14 @@ from handlers.support_handlers import callback, support_reply
 
 TOKEN = "8288994829:AAHh5SqqJyWe_3gskGRz10sv5vLyw9ryBf0"
 
+GROUP_ID = -1001234567890  # супергруппа с темами
+
+LOG_TOPIC = 44  # можно поставить id темы логов
+
+SUPPORTS = {
+    5530223549: "LowWin",
+    7123456789: "Hellsinger"
+}
 app = ApplicationBuilder().token(TOKEN).build()
 
 # Пользовательский интерфейс
